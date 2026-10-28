@@ -1,3 +1,5 @@
+# InstaBox 免费机保活 + 自动恢复 + 自动提交（真正自动化）
+# 部署说明见同目录 instabox-keepalive-部署说明.md
 name: instabox-keepalive
 
 on:
@@ -16,10 +18,12 @@ jobs:
       INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
       MACHINE_ID: ${{ vars.INSTABOX_MACHINE_ID }}
     steps:
-      - uses: actions/checkout@v4
+      # 1) 检出仓库（自动提交需要；fetch-depth:1 看最近一次提交日期即可）
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
+      # 2) 保活 / 自动恢复机器
       - name: Keep alive / auto-recover
         run: |
           set -euo pipefail
@@ -28,12 +32,14 @@ jobs:
           echo "当前状态: $STATE"
           case "$STATE" in
             running)
+              # 平台可见命令 -> 重置 30 分钟空闲计时（免费版唯一合法保活通道）
               curl -sf -X POST "$BASE/${MACHINE_ID}/exec" \
                    -H "$AUTH" -H "Content-Type: application/json" \
                    -d '{"cmd":"echo keepalive $(date -u +%FT%TZ)"}'
               echo "保活命令已发送"
               ;;
             suspended|stopped|error)
+              # start 对 stopped 冷启动、对 suspended 恢复内存进程
               curl -sf -X POST "$BASE/${MACHINE_ID}/start" \
                    -H "$AUTH" -H "Content-Type: application/json" \
                    -H "Idempotency-Key: $(date +%s%N)"
@@ -44,6 +50,9 @@ jobs:
               ;;
           esac
 
+      # 3) 自动提交：距上次提交 >7 天就空提交并 push，
+      #    避免 GitHub 对公开仓库"60 天无 commit 自动停用定时任务"。
+      #    if: always() 保证即使保活步骤临时失败，续命提交也会执行。
       - name: Auto-commit to keep schedule enabled
         if: always()
         run: |
