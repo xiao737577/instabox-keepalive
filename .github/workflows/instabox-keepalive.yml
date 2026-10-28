@@ -1,0 +1,61 @@
+name: instabox-keepalive
+
+on:
+  schedule:
+    - cron: '*/20 * * * *'   # 每 20 分钟；更稳可改 '*/15 * * * *'
+  workflow_dispatch: {}       # 手动触发测试
+
+permissions:
+  contents: write              # 允许自动提交 push
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    env:
+      BASE: https://api.instabox.sh/v1/machines
+      INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
+      MACHINE_ID: ${{ vars.INSTABOX_MACHINE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Keep alive / auto-recover
+        run: |
+          set -euo pipefail
+          AUTH="X-API-Key: ${INSTABOX_API_KEY}"
+          STATE=$(curl -sf -H "$AUTH" "$BASE/${MACHINE_ID}" | jq -r '.state')
+          echo "当前状态: $STATE"
+          case "$STATE" in
+            running)
+              curl -sf -X POST "$BASE/${MACHINE_ID}/exec" \
+                   -H "$AUTH" -H "Content-Type: application/json" \
+                   -d '{"cmd":"echo keepalive $(date -u +%FT%TZ)"}'
+              echo "保活命令已发送"
+              ;;
+            suspended|stopped|error)
+              curl -sf -X POST "$BASE/${MACHINE_ID}/start" \
+                   -H "$AUTH" -H "Content-Type: application/json" \
+                   -H "Idempotency-Key: $(date +%s%N)"
+              echo "已请求启动/恢复"
+              ;;
+            *)
+              echo "状态 $STATE 正在变化中，本次跳过"
+              ;;
+          esac
+
+      - name: Auto-commit to keep schedule enabled
+        if: always()
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          LAST=$(git log -1 --format=%cs)
+          CUTOFF=$(date -d "7 days ago" +%s)
+          if [ "$(date -d "$LAST" +%s)" -lt "$CUTOFF" ]; then
+            git commit --allow-empty -m "chore: keep scheduled workflow active"
+            git push
+            echo "已自动空提交（上次 $LAST），定时任务保持启用"
+          else
+            echo "距上次提交不足 7 天（$LAST），跳过"
+          fi
